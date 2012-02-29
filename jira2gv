@@ -1,0 +1,339 @@
+#!/usr/bin/env perl
+#############################################################################
+##
+## Copyright (C) 2012 Nokia Corporation and/or its subsidiary(-ies).
+## Contact: http://www.qt-project.org/
+##
+## Script for generating a Graphviz (.gv) file from Jira bugreports.
+## Might not work for any other Jira DB than the Qt Project bugreports DB.
+##
+## $QT_BEGIN_LICENSE:LGPL$
+## GNU Lesser General Public License Usage
+## This file may be used under the terms of the GNU Lesser General Public
+## License version 2.1 as published by the Free Software Foundation and
+## appearing in the file LICENSE.LGPL included in the packaging of this
+## file. Please review the following information to ensure the GNU Lesser
+## General Public License version 2.1 requirements will be met:
+## http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html.
+##
+## In addition, as a special exception, Nokia gives you certain additional
+## rights. These rights are described in the Nokia Qt LGPL Exception
+## version 1.1, included in the file LGPL_EXCEPTION.txt in this package.
+##
+## GNU General Public License Usage
+## Alternatively, this file may be used under the terms of the GNU General
+## Public License version 3.0 as published by the Free Software Foundation
+## and appearing in the file LICENSE.GPL included in the packaging of this
+## file. Please review the following information to ensure the GNU General
+## Public License version 3.0 requirements will be met:
+## http://www.gnu.org/copyleft/gpl.html.
+##
+## Other Usage
+## Alternatively, this file may be used in accordance with the terms and
+## conditions contained in a signed written agreement between you and Nokia.
+##
+##
+##
+##
+##
+##
+## $QT_END_LICENSE$
+##
+#############################################################################
+
+use strict;
+use warnings;
+
+package Qt::Jira2Gv;
+
+
+=head1 NAME
+
+jira2gv - generates a Graphviz (.gv) file from a Jira issue
+
+=head1 SYNOPSIS
+
+ jira2gv <--server URL> <--issue JiraIssue> [--verbose] [--cache]
+         [--edgeExtra JiraIssue=<valule>] [--issueStop JiraIssue]
+
+This script fetches hierarchical Jira items and generates a Graphviz graph.
+It will only display outward dependencies (so sub-tasks and "depends on" links) on a task.
+
+=head1 OPTIONS
+
+=over
+
+=item --verbose, -v
+
+Be verbose. Will print a statement for each issue fetched from Jira.
+
+=item --cache, -c
+
+Read or create cached items.  This will make the script store each Jira item fetched, and use it
+the next time around you run the script. Very useful for debugging, but don't use it on production
+system, as you'll never get updated issues.
+
+=item --server <url-base>
+
+HTTP address of the server to fetch Jira issues from.
+
+=item --issue <JIra issue identifier>
+
+Jira issue identifier of the issue to start the graph from.
+
+=item --edgeExtra <Jira issue identifier>='['<Edge extra data>']'
+
+Adds edge extra data to any edge going to the prefixed Jira issue. Be sure to include the [].
+
+Example: --edgeExtra JIRA-1234=[minlen=2]
+
+=item --issueStop <Jira issue identifier>
+
+Don't generate sub-graph passed this Jira issue.
+
+=back
+
+B<EXAMPLES:>
+
+=over
+
+Generate a graph from the Qt Project's bug-tracker, showing tasks left for the Qt 5 release:
+
+jira2gv --server https://bugreports.qt-project.org --issue QTBUG-20885 --edgeExtra QTBUG-24203=[minlen=2] --edgeExtra QTBUG-24131=[minlen=3]
+
+=back
+
+=cut
+
+use XML::Simple;
+use LWP::Simple;
+use HTML::Entities;
+use Data::Dumper;
+use Switch;
+use Text::Wrap   qw(wrap $columns fill);
+use Pod::Usage   qw(pod2usage);
+use Getopt::Long qw(GetOptionsFromArray );
+
+sub parse_arguments
+{
+    my ($self, @args) = @_;
+
+    %{$self} = (%{$self},
+        'verbose'             => 0,
+        'doCaching'           => 0,
+        'jiraServer'          => "" ,
+        'jiraIssue'           => "" ,
+        'jiraStopIssues'      => {},
+        'gvEdgeExtra'        => {},
+        'allOpenIssues'       => {},
+        'totalItems'          => 0,
+        'remainingIssues'     => [],
+    );
+
+    GetOptionsFromArray(\@args,
+        'verbose|v'         =>  \$self->{qw{ verbose           }},
+        'cache|c'           =>  \$self->{qw{ doCaching         }},
+        'server=s'          =>  \$self->{qw{ jiraServer        }},
+        'issue=s'           =>  \$self->{qw{ jiraIssue         }},
+        'edgeExtra=s%'      =>  \$self->{qw{ gvEdgeExtra      }},
+        'issueStop=s'       =>  sub {
+            my ($opt, $val) = @_;
+            $self->{'jiraStopIssues'}{$val} = 1;
+        },
+        'help|?'            =>  sub { pod2usage(1); },
+    ) || pod2usage(2);
+
+    die "Need to specify a server!" if (!$self->{jiraServer});
+    die "Need to specify an issue!" if (!$self->{jiraIssue});
+
+    return;
+}
+
+sub createGvItem
+{
+    my ($self, $item_ref) = @_;
+
+    my $result = "";
+    my $id = $item_ref->{'key'}->{'content'};
+
+    my $description = $item_ref->{'summary'};
+    $description = wrap("", "", "$description");
+    encode_entities($description);
+    $description =~ s/\n/<BR \/>/g;
+
+    my $assignee = $item_ref->{'assignee'}->{'content'};
+    encode_entities($assignee);
+
+    my $priority = $item_ref->{'priority'}->{'content'};
+    my $color;
+    switch ($priority) {
+        case /^P0/ { $color = "red" }
+        case /^P1/ { $color = "firebrick" }
+        case /^P2/ { $color = "gold" }
+        case /^P3/ { $color = "forestgreen" }
+        case /^Not/ { $color = "lightgrey" }
+        else       { $color = "steelblue" }
+    }
+
+    $result .= "\"" . $item_ref->{'key'}->{'content'} . "\" [shape=plaintext,margin=0,color=$color,"
+             . "label=<<TABLE ALIGN=\"LEFT\" BORDER=\"1\" CELLBORDER=\"0\" COLOR=\"black\">"
+             . "<TR><TD ALIGN=\"LEFT\"><B>"
+             . $item_ref->{'key'}->{'content'} . "</B></TD><TD ALIGN=\"CENTER\"><B>"
+             . $priority . "</B></TD><TD ALIGN=\"RIGHT\">"
+             . $assignee . "</TD></TR>";
+    $result .= "<TR><TD ALIGN=\"LEFT\" colspan=\"3\">"
+             . $description . "</TD></TR></TABLE>>]\n";
+    $result .= "\"" . $item_ref->{'key'}->{'content'} . "\" [URL=\""
+             . $item_ref->{'link'} . "\"]\n";
+
+    return $result;
+}
+
+sub fetchIssue
+{
+    my ($self, $issue) = @_;
+
+    my $gvContent = "";
+    print "fetching $issue..." if ($self->{verbose});
+
+    my $content;
+    if ($self->{doCaching} && -e "$issue.xml") {
+        open FILE, "<$issue.xml";
+        $content = do { local $/; <FILE> };
+        close FILE;
+    } else {
+        my $url = $self->{jiraServer} . '/si/jira.issueviews:issue-xml/' . $issue . '/' . $issue . '.xml';
+        $content = get($url) || die "Couldn't download $issue from $self->{jiraServer}! (using $url)";
+        open FILE, ">$issue.xml";
+        print FILE $content;
+        close FILE;
+    }
+    my $ref = XMLin($content);
+
+#    if ($issue eq "QTBUG-24203" || $issue eq "QTBUG-20885") {
+#        open FILE, ">$issue.pl";
+#        print FILE Dumper($ref);
+#        close FILE;
+#    }
+    my $taskStatus = $ref->{'channel'}->{'item'}->{'status'}->{'content'};
+
+    # Ignore tasks which are already closed or resolved
+    if ($taskStatus eq "Closed" || $taskStatus eq "Resolved" ) {
+        print "[- $taskStatus -]\n" if ($self->{verbose});
+        return "";
+    }
+
+    $gvContent .= $self->createGvItem($ref->{'channel'}->{'item'});
+    print "[done!]\n" if ($self->{verbose});
+
+    # Check if this is a task we stop at, then don't dive into sub-tasks here
+    my $stopIssue = $self->{'jiraStopIssues'}->{$issue};
+    if (!$stopIssue) {
+        # Push each sub-task of this task to the issueLinks hash
+        my $sref = $ref->{'channel'}->{'item'}->{'subtasks'}->{'subtask'};
+        if ($sref->{'content'}) {
+                push(@{$self->{'issueLinks'}{$issue}}, $sref->{'content'});
+                $gvContent .=  $self->fetchIssue($sref->{'content'});
+
+        } else {
+            foreach my $item (keys %{$sref}) {
+                my $subissue = $sref->{$item}->{'content'};
+                push(@{$self->{'issueLinks'}{$issue}}, $subissue);
+                $gvContent .=  $self->fetchIssue($subissue);
+            }
+        }
+
+        # Push each outward linke of this task to the issueLinks hash
+        if (exists $ref->{'channel'}->{'item'}->{'issuelinks'}->{'issuelinktype'}->{'outwardlinks'}) {
+            my $iref = $ref->{'channel'}->{'item'}->{'issuelinks'}->{'issuelinktype'}->{'outwardlinks'}->{'issuelink'};
+            if (ref($iref) eq "ARRAY") {
+                foreach my $item_ref (@{$ref->{'channel'}->{'item'}->{'issuelinks'}->{'issuelinktype'}->{'outwardlinks'}->{'issuelink'}}) {
+                    my $subissue = $item_ref->{'issuekey'}->{'content'};
+                    push(@{$self->{'issueLinks'}{$issue}}, $subissue);
+                    $gvContent .=  $self->fetchIssue($subissue);
+                }
+            } elsif (ref($iref) eq "HASH") {
+                my $subissue = $iref->{'issuekey'}->{'content'};
+                push(@{$self->{'issueLinks'}{$issue}}, $subissue);
+                $gvContent .=  $self->fetchIssue($subissue);
+            }
+        }
+    }
+
+    ++$self->{'totalItems'};
+    $self->{'allOpenIssues'}{$issue} = 1;
+    return $gvContent;
+}
+
+sub fetchAllRelatedIssues
+{
+    my ($self, $issue) = @_;
+    push (@{$self->{'remainingIssues'}}, $issue);
+
+    my $gvContent = "";
+    while(@{$self->{'remainingIssues'}}) {
+        $gvContent .= $self->fetchIssue(shift(@{$self->{'remainingIssues'}}));
+    }
+    return $gvContent;
+}
+
+sub calculateDependencies()
+{
+    my ($self) = @_;
+
+    my $gvContent = "";
+    #print Dumper(\$self->{'issueLinks'});
+    my $ref = $self->{'gvEdgeExtra'};
+    foreach my $key (keys %{$self->{'issueLinks'}}) {
+        if ($self->{'allOpenIssues'}{$key}) {
+            foreach my $subissue (@{$self->{'issueLinks'}{$key}}) {
+                my $special = $ref->{$subissue};
+                $special = "" if (!$special);
+                $gvContent .= "\"$key\"->\"$subissue\" $special\n" if ($self->{'allOpenIssues'}{$subissue});
+            }
+        }
+    }
+    return $gvContent;
+}
+
+sub new
+{
+    my ($class, @arguments) = @_;
+
+    my $self = {};
+    bless $self, $class;
+    $self->parse_arguments(@arguments);
+
+    return $self;
+}
+
+sub run
+{
+    my ($self) = @_;
+
+    $columns = 50; # set wrap column for Text::Wrap
+
+    my $jiraIssue = $self->{jiraIssue};
+    my $gvContent = << 'EOM';
+digraph G {
+    rankdir=LR
+    ranksep=.50
+    nodesep=.10
+    node [style=filled, fonttype=Helvetica, fontsize=7]
+EOM
+    $gvContent .= $self->fetchAllRelatedIssues($jiraIssue)
+                . $self->calculateDependencies() . "}\n";
+
+    print "Found $self->{'totalItems'} related items\n" if ($self->{verbose});
+    #print $result;
+    #print Dumper(\%issueLinks);
+
+    open FILE, ">$jiraIssue.gv";
+    print FILE $gvContent;
+    close FILE;
+}
+
+#==============================================================================
+
+Qt::Jira2Gv->new(@ARGV)->run if (!caller);
+1;
