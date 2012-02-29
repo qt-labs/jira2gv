@@ -113,6 +113,7 @@ use Switch;
 use Text::Wrap   qw(wrap $columns fill);
 use Pod::Usage   qw(pod2usage);
 use Getopt::Long qw(GetOptionsFromArray );
+use POSIX        qw(strftime);
 
 sub parse_arguments
 {
@@ -315,14 +316,15 @@ sub run
 
     my $jiraIssue = $self->{jiraIssue};
     my $gvContent = << 'EOM';
-digraph G {
+digraph Jira_issue_graph {
     rankdir=LR
     ranksep=.50
     nodesep=.10
-    node [style=filled, fonttype=Helvetica, fontsize=7]
+    node [style=filled, fonttype=Helvetica, fontsize=8]
 EOM
+    my $currentDate = strftime("%Y-%m-%d %H:%M", localtime);
     $gvContent .= $self->fetchAllRelatedIssues($jiraIssue)
-                . $self->calculateDependencies() . "}\n";
+                . $self->calculateDependencies() . "\nlabel=\"Jira issue graph for $jiraIssue @ $currentDate\"\n}\n";
 
     print "Found $self->{'totalItems'} related items\n" if ($self->{verbose});
     #print $result;
