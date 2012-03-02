@@ -168,15 +168,15 @@ sub createGvItem
     my $priority = $item_ref->{'priority'}->{'content'};
     my $color;
     switch ($priority) {
-        case /^P0/ { $color = "red" }
-        case /^P1/ { $color = "firebrick" }
+        case /^P0/ { $color = "firebrick" }
+        case /^P1/ { $color = "red" }
         case /^P2/ { $color = "gold" }
         case /^P3/ { $color = "forestgreen" }
         case /^Not/ { $color = "lightgrey" }
         else       { $color = "steelblue" }
     }
 
-    $result .= "\"$id\" [shape=none,margin=0,color=$color,"
+    $result .= "\"$id\" [shape=none,margin=0,color=\"$color\","
              . "label=<<TABLE ALIGN=\"LEFT\" BORDER=\"1\" CELLBORDER=\"0\" COLOR=\"black\">"
              . "<TR><TD ALIGN=\"LEFT\"><B>$id</B></TD><TD ALIGN=\"CENTER\"><B>"
              . $priority . "</B></TD><TD ALIGN=\"RIGHT\">"
