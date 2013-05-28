@@ -2,7 +2,7 @@
 #############################################################################
 ##
 ## Copyright (C) 2013 Digia Plc and/or its subsidiary(-ies).
-## Contact: http://www.qt-project.org/
+## Contact: http://www.qt-project.org/legal
 ##
 ## Script for generating a Graphviz (.gv) file from Jira bugreports.
 ## Might not work for any other Jira DB than the Qt Project bugreports DB.
